@@ -11,7 +11,7 @@ function App() {
   }, []);
 
   const fetchPendingPosts = async () => {
-    const response = await fetch('/api/get_pending_posts');
+    const response = await fetch('/get_pending_posts');
     const data = await response.json();
     setPosts(data);
   };

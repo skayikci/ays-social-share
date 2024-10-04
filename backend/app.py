@@ -1,16 +1,24 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 import os
 from pymongo import MongoClient
 import tweepy
 import requests
 from dotenv import load_dotenv
+import anthropic
+from dataclasses import dataclass
+from typing import List
+import certifi
+from bson import json_util
+from bson.objectid import ObjectId
 
 load_dotenv()
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend/build')
+CORS(app)
 
 # Initialize services
-mongo_client = MongoClient(os.environ.get('MONGO_URI'))
+mongo_client = MongoClient(os.environ.get('MONGO_URI'), tlsCAFile=certifi.where())
 db = mongo_client.post_generator
 
 # Twitter setup
@@ -28,28 +36,26 @@ ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY')
 LINKEDIN_ACCESS_TOKEN = os.environ.get('LINKEDIN_ACCESS_TOKEN')
 
 def generate_anthropic_completion(prompt):
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-Key": ANTHROPIC_API_KEY,
-    }
-    data = {
-        "prompt": prompt,
-        "model": "claude-3-sonnet-20240229",
-        "max_tokens_to_sample": 1000,
-    }
+    print(prompt)
+    client = anthropic.Anthropic(
+        api_key=ANTHROPIC_API_KEY,
+    )
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/complete",
-            headers=headers,
-            json=data
-        )
-        response.raise_for_status()  # This will raise an exception for HTTP errors
-        return response.json()['completion']
-    except requests.exceptions.RequestException as e:
+        # response = client.messages.create(
+        #     model="claude-3-5-sonnet-20240620",
+        #     max_tokens=1024,
+        #     messages=[
+        #         {"role": "user", "content": prompt}
+        #     ]
+        # )
+        # print(response)
+        # text_block = response.content[0]
+        # print(text_block)
+        # return text_block.text
+        return "I apologize, but I don't have access to real-time weather information. Weather conditions can change rapidly, and without a current data source, I can't provide you with accurate information about the weather in Hamburg right now.\n\nTo get the most up-to-date and accurate weather information for Hamburg, you could:\n\n1. Check a weather website or app\n2. Look at the local weather forecast for Hamburg\n3. Check the website of the German Weather Service (Deutscher Wetterdienst)\n\nThese sources will give you current conditions, forecasts, and any weather alerts for Hamburg."
+    except Exception as e:
         print(f"Error calling Anthropic API: {str(e)}")
-        if response.status_code == 402:
-            return "Error: Insufficient credit in Anthropic account. Please check your account balance."
-        return "Error: Unable to generate completion. Please try again later."
+        return f"Error: Unable to generate completion. {str(e)}"
 
 def post_to_linkedin(content):
     url = "https://api.linkedin.com/v2/ugcPosts"
@@ -84,18 +90,19 @@ def generate_posts():
     if completion.startswith("Error:"):
         return jsonify({'status': 'error', 'message': completion}), 400
     posts = completion.split('\n\n')  # Assuming each post is separated by two newlines
-    for post in posts:
-        db.posts.insert_one({
-            'content': post,
-            'platform': 'twitter' if len(post) <= 280 else 'linkedin',
-            'status': 'pending'
-        })
+    print('inserting data into db')
+    # for post in posts:
+    #     db.posts.insert_one({
+    #         'content': post,
+    #         'platform': 'twitter' if len(post) <= 280 else 'linkedin',
+    #         'status': 'pending'
+    #     })
     return jsonify({'status': 'success', 'count': len(posts)})
 
 @app.route('/get_pending_posts', methods=['GET'])
 def get_pending_posts():
     pending_posts = list(db.posts.find({'status': 'pending'}))
-    return jsonify(pending_posts)
+    return json_util.dumps(pending_posts)
 
 @app.route('/update_post', methods=['POST'])
 def update_post():
@@ -117,5 +124,34 @@ def approve_post():
     db.posts.update_one({'_id': post_id}, {'$set': {'status': 'posted'}})
     return jsonify({'status': 'success'})
 
+@dataclass
+class TextBlock:
+    text: str
+    type: str
+
+@dataclass
+class Usage:
+    input_tokens: int
+    output_tokens: int
+
+@dataclass
+class Message:
+    id: str
+    content: List[TextBlock]
+    model: str
+    role: str
+    stop_reason: str
+    stop_sequence: str | None
+    type: str
+    usage: Usage
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    if path != "" and os.path.exists(app.static_folder + '/' + path):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(use_reloader=True, port=8181, threaded=True)
